@@ -17,212 +17,230 @@ limitations under the License.
 package releaseutil
 
 import (
+	"fmt"
+	"math"
 	"reflect"
 	"testing"
-
-	"sigs.k8s.io/yaml"
 
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/release"
 )
 
 func TestSortManifests(t *testing.T) {
-
-	data := []struct {
-		name     []string
-		path     string
-		kind     []string
-		hooks    map[string][]release.HookEvent
-		manifest string
-	}{
-		{
-			name:  []string{"first"},
-			path:  "one",
-			kind:  []string{"Job"},
-			hooks: map[string][]release.HookEvent{"first": {release.HookPreInstall}},
-			manifest: `apiVersion: v1
-kind: Job
-metadata:
-  name: first
-  labels:
-    doesnot: matter
-  annotations:
-    "helm.sh/hook": pre-install
-`,
-		},
-		{
-			name:  []string{"second"},
-			path:  "two",
-			kind:  []string{"ReplicaSet"},
-			hooks: map[string][]release.HookEvent{"second": {release.HookPostInstall}},
-			manifest: `kind: ReplicaSet
+	hookReplicaSetTwo := release.Hook{
+		Name:           "second",
+		Kind:           "ReplicaSet",
+		Path:           "two",
+		Weight:         0,
+		Events:         []release.HookEvent{release.HookPostInstall},
+		DeletePolicies: []release.HookDeletePolicy{},
+		Manifest: `kind: ReplicaSet
 apiVersion: v1beta1
 metadata:
   name: second
   annotations:
-    "helm.sh/hook": post-install
-`,
-		}, {
-			name:  []string{"third"},
-			path:  "three",
-			kind:  []string{"ReplicaSet"},
-			hooks: map[string][]release.HookEvent{"third": nil},
-			manifest: `kind: ReplicaSet
+    "helm.sh/hook": post-install`,
+	}
+
+	// This should be skipped because "helm.sh/hook": no-such-hook
+	unknownHookManifest := `kind: ReplicaSet
 apiVersion: v1beta1
 metadata:
   name: third
   annotations:
-    "helm.sh/hook": no-such-hook
-`,
-		}, {
-			name:  []string{"fourth"},
-			path:  "four",
-			kind:  []string{"Pod"},
-			hooks: map[string][]release.HookEvent{"fourth": nil},
-			manifest: `kind: Pod
+    "helm.sh/hook": no-such-hook`
+
+	manifestPodFour := Manifest{
+		Name:   "four",
+		Weight: 0,
+		Head: &SimpleHead{
+			Kind:    "Pod",
+			Version: "v1",
+		},
+		Content: `kind: Pod
 apiVersion: v1
 metadata:
   name: fourth
   annotations:
     nothing: here`,
-		}, {
-			name:  []string{"fifth"},
-			path:  "five",
-			kind:  []string{"ReplicaSet"},
-			hooks: map[string][]release.HookEvent{"fifth": {release.HookPostDelete, release.HookPostInstall}},
-			manifest: `kind: ReplicaSet
+	}
+
+	hookReplicaSetFive := release.Hook{
+		Name:           "fifth",
+		Kind:           "ReplicaSet",
+		Path:           "five",
+		Weight:         0,
+		Events:         []release.HookEvent{release.HookPostDelete, release.HookPostInstall},
+		DeletePolicies: []release.HookDeletePolicy{},
+		Manifest: `kind: ReplicaSet
 apiVersion: v1beta1
 metadata:
   name: fifth
   annotations:
-    "helm.sh/hook": post-delete, post-install
-`,
-		}, {
-			// Regression test: files with an underscore in the base name should be skipped.
-			name:     []string{"sixth"},
-			path:     "six/_six",
-			kind:     []string{"ReplicaSet"},
-			hooks:    map[string][]release.HookEvent{"sixth": nil},
-			manifest: `invalid manifest`, // This will fail if partial is not skipped.
-		}, {
-			// Regression test: files with no content should be skipped.
-			name:     []string{"seventh"},
-			path:     "seven",
-			kind:     []string{"ReplicaSet"},
-			hooks:    map[string][]release.HookEvent{"seventh": nil},
-			manifest: "",
+    "helm.sh/hook": post-delete, post-install`,
+	}
+
+	manifestConfigMapEight := Manifest{
+		Name:   "eight",
+		Weight: 0,
+		Head: &SimpleHead{
+			Kind:    "ConfigMap",
+			Version: "v1",
 		},
-		{
-			name:  []string{"eighth", "example-test"},
-			path:  "eight",
-			kind:  []string{"ConfigMap", "Pod"},
-			hooks: map[string][]release.HookEvent{"eighth": nil, "example-test": {release.HookTest}},
-			manifest: `kind: ConfigMap
+		Content: `kind: ConfigMap
 apiVersion: v1
 metadata:
   name: eighth
 data:
-  name: value
----
-apiVersion: v1
+  name: value`,
+	}
+
+	hookPodEight := release.Hook{
+		Name:           "example-test",
+		Kind:           "Pod",
+		Path:           "eight",
+		Weight:         0,
+		Events:         []release.HookEvent{release.HookTest},
+		DeletePolicies: []release.HookDeletePolicy{},
+		Manifest: `apiVersion: v1
 kind: Pod
 metadata:
   name: example-test
   annotations:
-    "helm.sh/hook": test
-`,
+    "helm.sh/hook": test`,
+	}
+
+	manifestUnkownNine := Manifest{
+		Name:   "nine",
+		Weight: 0,
+		Head: &SimpleHead{
+			Kind:    "Unknown",
+			Version: "v1",
 		},
+		Content: `kind: Unknown
+apiVersion: v1
+metadata:
+  name: ninth
+data:
+  name: value`,
 	}
 
-	manifests := make(map[string]string, len(data))
-	for _, o := range data {
-		manifests[o.path] = o.manifest
+	manifestUnkownTenWeightMinus1 := Manifest{
+		Name:   "ten",
+		Weight: -1,
+		Head: &SimpleHead{
+			Kind:    "Unknown",
+			Version: "v1",
+		},
+		Content: `kind: Unknown
+apiVersion: v1
+metadata:
+  name: tenth
+  annotations:
+    "helm.sh/weight": -1
+data:
+  name: value`,
 	}
 
-	hs, generic, err := SortManifests(manifests, chartutil.VersionSet{"v1", "v1beta1"}, InstallOrder)
+	manifestUnkownElevenWeightPlus1 := Manifest{
+		Name:   "eleven",
+		Weight: 1,
+		Head: &SimpleHead{
+			Kind:    "Unknown",
+			Version: "v1",
+		},
+		Content: `kind: Unknown
+apiVersion: v1
+metadata:
+  name: eleventh
+  annotations:
+    "helm.sh/weight": 1
+data:
+  name: value`,
+	}
+
+	input := map[string]string{
+		hookReplicaSetTwo.Path:  hookReplicaSetTwo.Manifest,
+		"unkownHook":            unknownHookManifest,
+		manifestPodFour.Name:    manifestPodFour.Content,
+		hookReplicaSetFive.Path: hookReplicaSetFive.Manifest,
+
+		// Regression test: files with an underscore in the base name should be skipped.
+		"six/_six": "invalid manifest",
+
+		// Regression test: files with no content should be skipped.
+		"seven": "",
+
+		"eight": fmt.Sprintf("%s\n---\n%s", manifestConfigMapEight.Content, hookPodEight.Manifest),
+
+		manifestUnkownNine.Name:              manifestUnkownNine.Content,
+		manifestUnkownTenWeightMinus1.Name:   manifestUnkownTenWeightMinus1.Content,
+		manifestUnkownElevenWeightPlus1.Name: manifestUnkownElevenWeightPlus1.Content,
+	}
+
+	// Install Order
+	hooks, manifests, err := SortManifests(input, chartutil.VersionSet{"v1", "v1beta1"}, InstallOrder)
 	if err != nil {
-		t.Fatalf("Unexpected error: %s", err)
+		t.Errorf("Unexpected error: %s", err)
 	}
 
-	// This test will fail if 'six' or 'seven' was added.
-	if len(generic) != 2 {
-		t.Errorf("Expected 2 generic manifests, got %d", len(generic))
+	expectedHooks := []release.Hook{hookPodEight, hookReplicaSetFive, hookReplicaSetTwo}
+	assertMatchingHooks(t, hooks, expectedHooks)
+
+	expectedManifests := []Manifest{manifestUnkownTenWeightMinus1, manifestConfigMapEight, manifestPodFour, manifestUnkownNine, manifestUnkownElevenWeightPlus1}
+	assertMatchingManifests(t, manifests, expectedManifests)
+
+	// Uninstall order
+	hooksUninstall, manifestsUninstall, err := SortManifests(input, chartutil.VersionSet{"v1", "v1beta1"}, UninstallOrder)
+	if err != nil {
+		t.Errorf("Unexpected error: %s", err)
 	}
 
-	if len(hs) != 4 {
-		t.Errorf("Expected 4 hooks, got %d", len(hs))
-	}
+	expectedHooksUninstall := []release.Hook{hookReplicaSetFive, hookReplicaSetTwo, hookPodEight}
+	assertMatchingHooks(t, hooksUninstall, expectedHooksUninstall)
 
-	for _, out := range hs {
-		found := false
-		for _, expect := range data {
-			if out.Path == expect.path {
-				found = true
-				if out.Path != expect.path {
-					t.Errorf("Expected path %s, got %s", expect.path, out.Path)
-				}
-				nameFound := false
-				for _, expectedName := range expect.name {
-					if out.Name == expectedName {
-						nameFound = true
-					}
-				}
-				if !nameFound {
-					t.Errorf("Got unexpected name %s", out.Name)
-				}
-				kindFound := false
-				for _, expectedKind := range expect.kind {
-					if out.Kind == expectedKind {
-						kindFound = true
-					}
-				}
-				if !kindFound {
-					t.Errorf("Got unexpected kind %s", out.Kind)
-				}
+	expectedManifestsUninstall := []Manifest{manifestUnkownElevenWeightPlus1, manifestPodFour, manifestConfigMapEight, manifestUnkownNine, manifestUnkownTenWeightMinus1}
+	assertMatchingManifests(t, manifestsUninstall, expectedManifestsUninstall)
+}
 
-				expectedHooks := expect.hooks[out.Name]
-				if !reflect.DeepEqual(expectedHooks, out.Events) {
-					t.Errorf("expected events: %v but got: %v", expectedHooks, out.Events)
-				}
-
-			}
+func assertMatchingHooks(t *testing.T, actualHooks []*release.Hook, expectedHooks []release.Hook) {
+	maxIdx := int(math.Max(float64(len(actualHooks)), float64(len(expectedHooks))))
+	for idx := 0; idx < maxIdx; idx++ {
+		if idx >= len(actualHooks) {
+			t.Fatalf("Missing hook at index %d : expecting:\n %#v", idx, expectedHooks[idx])
 		}
-		if !found {
-			t.Errorf("Result not found: %v", out)
+		if idx >= len(expectedHooks) {
+			t.Fatalf("Unexpected hook at index %d: \n %#v", idx, &actualHooks[idx])
+		}
+		if (actualHooks[idx].Name != expectedHooks[idx].Name) ||
+			(actualHooks[idx].Kind != expectedHooks[idx].Kind) ||
+			(actualHooks[idx].Path != expectedHooks[idx].Path) ||
+			(actualHooks[idx].Weight != expectedHooks[idx].Weight) ||
+			(actualHooks[idx].Manifest != expectedHooks[idx].Manifest) ||
+			!reflect.DeepEqual(actualHooks[idx].Events, expectedHooks[idx].Events) ||
+			!reflect.DeepEqual(actualHooks[idx].DeletePolicies, expectedHooks[idx].DeletePolicies) {
+
+			t.Fatalf("Mismatcing hook at index %d - expecting:\n %#v \nbut was:\n %#v", idx, expectedHooks[idx], *actualHooks[idx])
 		}
 	}
+}
 
-	// Verify the sort order
-	sorted := []Manifest{}
-	for _, s := range data {
-		manifests := SplitManifests(s.manifest)
-
-		for _, m := range manifests {
-			var sh SimpleHead
-			if err := yaml.Unmarshal([]byte(m), &sh); err != nil {
-				// This is expected for manifests that are corrupt or empty.
-				t.Log(err)
-				continue
-			}
-
-			name := sh.Metadata.Name
-
-			// only keep track of non-hook manifests
-			if s.hooks[name] == nil {
-				another := Manifest{
-					Content: m,
-					Name:    name,
-					Head:    &sh,
-				}
-				sorted = append(sorted, another)
-			}
+func assertMatchingManifests(t *testing.T, actualManifests []Manifest, expectedManifests []Manifest) {
+	maxIdx := int(math.Max(float64(len(actualManifests)), float64(len(expectedManifests))))
+	for idx := 0; idx < maxIdx; idx++ {
+		if idx >= len(actualManifests) {
+			t.Fatalf("Missing manifest at index %d : expecting:\n %#v", idx, expectedManifests[idx])
 		}
-	}
+		if idx >= len(expectedManifests) {
+			t.Fatalf("Unexpected manifest at index %d: \n %#v", idx, &actualManifests[idx])
+		}
+		if (actualManifests[idx].Name != expectedManifests[idx].Name) ||
+			(actualManifests[idx].Content != expectedManifests[idx].Content) ||
+			(actualManifests[idx].Weight != expectedManifests[idx].Weight) ||
+			(actualManifests[idx].Head.Kind != expectedManifests[idx].Head.Kind) ||
+			(actualManifests[idx].Head.Version != expectedManifests[idx].Head.Version) {
 
-	sorted = sortManifestsByKind(sorted, InstallOrder)
-	for i, m := range generic {
-		if m.Content != sorted[i].Content {
-			t.Errorf("Expected %q, got %q", m.Content, sorted[i].Content)
+			t.Fatalf("Mismatcing manifest at index %d - expecting:\n %#v \nbut was:\n %#v", idx, expectedManifests[idx], actualManifests[idx])
 		}
 	}
 }

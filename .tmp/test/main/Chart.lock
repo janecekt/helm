@@ -1,0 +1,6 @@
+dependencies:
+- name: module
+  repository: file://../module
+  version: 1.0.0
+digest: sha256:070e3948de3065b1e70b2b9d65e634f3ef1bb239c435adb6c847902e5fb4eeab
+generated: "2021-09-01T01:04:12.3082986+02:00"

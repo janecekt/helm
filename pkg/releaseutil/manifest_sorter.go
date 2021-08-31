@@ -19,6 +19,7 @@ package releaseutil
 import (
 	"log"
 	"path"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,6 +36,7 @@ type Manifest struct {
 	Name    string
 	Content string
 	Head    *SimpleHead
+	Weight  int
 }
 
 // manifestFile represents a file that contains a manifest.
@@ -108,7 +110,17 @@ func SortManifests(files map[string]string, apis chartutil.VersionSet, ordering 
 		}
 	}
 
-	return sortHooksByKind(result.hooks, ordering), sortManifestsByKind(result.generic, ordering), nil
+	sortedHooks := sortHooksByKind(result.hooks, ordering)
+
+	sortedManifestsByKind := sortManifestsByKind(result.generic, ordering)
+
+	var isUninstall = false
+	if reflect.DeepEqual(ordering, UninstallOrder) {
+		isUninstall = true
+	}
+	sortedManifests := sortManifestsByWeight(sortedManifestsByKind, isUninstall)
+
+	return sortedHooks, sortedManifests, nil
 }
 
 // sort takes a manifestFile object which may contain multiple resource definition
@@ -161,6 +173,7 @@ func (file *manifestFile) sort(result *result) error {
 				Name:    file.path,
 				Content: m,
 				Head:    &entry,
+				Weight:  calculateManifestWeight(entry),
 			})
 			continue
 		}
@@ -210,7 +223,19 @@ func hasAnyAnnotation(entry SimpleHead) bool {
 		len(entry.Metadata.Annotations) != 0
 }
 
-// calculateHookWeight finds the weight in the hook weight annotation.
+// calculateHookWeight finds the weight in the manifest weight annotation.
+//
+// If no weight is found, the assigned weight is 0
+func calculateManifestWeight(entry SimpleHead) int {
+	mws := entry.Metadata.Annotations[ManifestWeightAnnotation]
+	mw, err := strconv.Atoi(mws)
+	if err != nil {
+		mw = 0
+	}
+	return mw
+}
+
+// calculateManifestWeight finds the weight in the hook weight annotation.
 //
 // If no weight is found, the assigned weight is 0
 func calculateHookWeight(entry SimpleHead) int {
@@ -230,4 +255,18 @@ func operateAnnotationValues(entry SimpleHead, annotation string, operate func(p
 			operate(dp)
 		}
 	}
+}
+
+// sort manifests by weight
+//
+// Results are sorted by weight, keeping order of items with equal weight
+func sortManifestsByWeight(manifests []Manifest, reverseOrder bool) []Manifest {
+	m := manifests
+	sort.SliceStable(m, func(i, j int) bool {
+		if reverseOrder {
+			return m[i].Weight > m[j].Weight
+		}
+		return m[i].Weight < m[j].Weight
+	})
+	return m
 }

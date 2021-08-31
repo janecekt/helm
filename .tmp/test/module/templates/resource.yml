@@ -1,0 +1,6 @@
+kind: LoadBalancer
+apiVersion: bcp.barclays.com/v1
+metadata:
+  name: {{ .Chart.Name }}
+spec:
+  open: true

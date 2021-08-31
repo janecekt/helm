@@ -1,0 +1,10 @@
+apiVersion: v2
+name: main
+version: 1.0.0
+type: application
+
+dependencies:
+  - alias: my-modules
+    name: module
+    version: 1.0.0
+    repository: file://../module

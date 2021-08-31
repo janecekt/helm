@@ -23,6 +23,9 @@ import (
 	"strings"
 )
 
+// ManifestWeightAnnotation is the label name for a manifest weight
+const ManifestWeightAnnotation = "helm.sh/weight"
+
 // SimpleHead defines what the structure of the head of a manifest file
 type SimpleHead struct {
 	Version  string `json:"apiVersion"`
